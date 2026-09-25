@@ -19,7 +19,12 @@ import {
 import { selectBatch } from './selector';
 import { recordView } from './history';
 import { removePathFromBatches } from './batches';
-import { attachmentLabel, isImagePath } from './media';
+import {
+  attachmentLabel,
+  isImagePath,
+  isPdfPath,
+  isVideoPath,
+} from './media';
 
 export const VIEW_TYPE_DOOMSCROLL = 'doomscroll-view';
 const HISTORY_SAVE_DELAY_MS = 2_000;
@@ -78,6 +83,8 @@ export class DoomscrollView extends ItemView {
   hasRendered: boolean = false;
   currentBatch: NotePreview[] = [];
   imageObserver: IntersectionObserver | null = null;
+  pdfObserver: IntersectionObserver | null = null;
+  videoObserver: IntersectionObserver | null = null;
   cardObserver: IntersectionObserver | null = null;
   private infiniteScrollObserver: IntersectionObserver | null = null;
   private infiniteScrollLoading = false;
@@ -807,7 +814,16 @@ export class DoomscrollView extends ItemView {
   ): HTMLElement {
     const card = container.createDiv('doomscroll-card');
     card.dataset.path = preview.path;
-    applyCachedCardSize(card, this.isSimplifiedView(), this.getPreviewSize());
+    const inlineAttachmentPreview =
+      preview.attachment &&
+      (isImagePath(preview.path) ||
+        isPdfPath(preview.path) ||
+        isVideoPath(preview.path));
+    if (inlineAttachmentPreview) {
+      card.addClass('doomscroll-card-inline-attachment');
+    } else {
+      applyCachedCardSize(card, this.isSimplifiedView(), this.getPreviewSize());
+    }
 
     // Title + date row
     const titleRow = card.createDiv('doomscroll-card-titlerow');
@@ -844,6 +860,28 @@ export class DoomscrollView extends ItemView {
         img,
         getImageDimensionCacheKey(preview)
       );
+    }
+
+    if (preview.attachment && isPdfPath(preview.path)) {
+      const pdfContainer = card.createDiv('doomscroll-card-pdf-container');
+      const pdf = pdfContainer.createEl('iframe');
+      pdf.className = 'doomscroll-card-pdf';
+      pdf.dataset.path = preview.path;
+      pdf.title = `${preview.title} preview`;
+      this.setupPdfLazyLoad(pdf);
+    }
+
+    if (preview.attachment && isVideoPath(preview.path)) {
+      const videoContainer = card.createDiv('doomscroll-card-video-container');
+      const video = videoContainer.createEl('video');
+      video.className = 'doomscroll-card-video';
+      video.dataset.path = preview.path;
+      video.title = `${preview.title} preview`;
+      video.muted = true;
+      video.loop = true;
+      video.playsInline = true;
+      video.preload = 'metadata';
+      this.setupVideoLazyLoad(video);
     }
 
     // Snippet is rendered on demand from a bounded Markdown fragment.
@@ -1151,6 +1189,12 @@ export class DoomscrollView extends ItemView {
       card.querySelectorAll<HTMLImageElement>('img').forEach((image) => {
         this.imageObserver?.unobserve(image);
       });
+      card.querySelectorAll<HTMLIFrameElement>('iframe').forEach((pdf) => {
+        this.pdfObserver?.unobserve(pdf);
+      });
+      card.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
+        this.videoObserver?.unobserve(video);
+      });
       card.remove();
     }
 
@@ -1270,6 +1314,59 @@ export class DoomscrollView extends ItemView {
     this.imageObserver.observe(img);
   }
 
+  private setupPdfLazyLoad(pdf: HTMLIFrameElement): void {
+    if (!this.pdfObserver) {
+      this.pdfObserver = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+
+            const pdfEl = entry.target as HTMLIFrameElement;
+            const path = pdfEl.dataset.path;
+            const file = path
+              ? this.plugin.app.vault.getAbstractFileByPath(path)
+              : null;
+            if (file instanceof TFile) {
+              const resourcePath = this.plugin.app.vault.getResourcePath(file);
+              pdfEl.src = `${resourcePath}#page=1&view=FitH`;
+            }
+            this.pdfObserver?.unobserve(pdfEl);
+          });
+        },
+        { rootMargin: '100px' }
+      );
+    }
+
+    this.pdfObserver.observe(pdf);
+  }
+
+  private setupVideoLazyLoad(video: HTMLVideoElement): void {
+    if (!this.videoObserver) {
+      this.videoObserver = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+
+            const videoEl = entry.target as HTMLVideoElement;
+            const path = videoEl.dataset.path;
+            const file = path
+              ? this.plugin.app.vault.getAbstractFileByPath(path)
+              : null;
+            if (file instanceof TFile) {
+              videoEl.src = this.plugin.app.vault.getResourcePath(file);
+              videoEl.preload = 'auto';
+              videoEl.load();
+            }
+            this.videoObserver?.unobserve(videoEl);
+          });
+        },
+        { rootMargin: '100px' }
+      );
+    }
+
+    this.videoObserver.observe(video);
+  }
+
   private scheduleHistorySave(): void {
     this.historySavePending = true;
     if (this.historySaveTimer !== null) {
@@ -1302,6 +1399,14 @@ export class DoomscrollView extends ItemView {
     if (this.imageObserver) {
       this.imageObserver.disconnect();
       this.imageObserver = null;
+    }
+    if (this.pdfObserver) {
+      this.pdfObserver.disconnect();
+      this.pdfObserver = null;
+    }
+    if (this.videoObserver) {
+      this.videoObserver.disconnect();
+      this.videoObserver = null;
     }
     if (this.infiniteScrollObserver) {
       this.infiniteScrollObserver.disconnect();
