@@ -19,6 +19,7 @@ import {
 import { selectBatch } from './selector';
 import { recordView } from './history';
 import { removePathFromBatches } from './batches';
+import { attachmentLabel, isImagePath } from './media';
 
 export const VIEW_TYPE_DOOMSCROLL = 'doomscroll-view';
 const HISTORY_SAVE_DELAY_MS = 2_000;
@@ -31,8 +32,6 @@ const PLUGIN_INDEX_READY_TIMEOUT_MS = 10_000;
 const BASES_RENDER_TIMEOUT_MS = 3_000;
 const PLUGIN_RENDER_QUIET_MS = 200;
 const PLUGIN_RENDER_TIMEOUT_MS = 3_000;
-const IMAGE_FILE_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp)$/i;
-
 interface ImageDimensions {
   width: number;
   height: number;
@@ -110,12 +109,20 @@ export class DoomscrollView extends ItemView {
     this.registerEvent(
       this.plugin.app.vault.on('modify', (file) => {
         if (file instanceof TFile) {
-          if (IMAGE_FILE_EXT_RE.test(file.path)) {
+          if (isImagePath(file.path)) {
             invalidateImageCaches();
           }
           if (file.extension === 'base') {
             this.schedulePluginPreviewRefresh();
           }
+        }
+      })
+    );
+    this.registerEvent(
+      this.plugin.app.vault.on('create', (file) => {
+        if (file instanceof TFile) {
+          // Make a newly added bare attachment visible on the next reshuffle.
+          this.plugin.indexer.markDirty();
         }
       })
     );
@@ -408,9 +415,7 @@ export class DoomscrollView extends ItemView {
       const candidates = Object.entries(this.plugin.data.previews)
         .map(([path, stored]) => toNotePreview(path, stored))
         .filter(
-          (preview) =>
-            this.plugin.data.settings.includeMediaOnlyNotes ||
-            !isMediaOnlyPreview(preview)
+          (preview) => this.shouldIncludePreview(preview)
         );
       this.currentBatch = selectBatch(
         candidates,
@@ -549,9 +554,7 @@ export class DoomscrollView extends ItemView {
         .map(([path, stored]) => toNotePreview(path, stored))
         .filter(
           (preview) =>
-            !loadedPaths.has(preview.path) &&
-            (this.plugin.data.settings.includeMediaOnlyNotes ||
-              !isMediaOnlyPreview(preview))
+            !loadedPaths.has(preview.path) && this.shouldIncludePreview(preview)
         );
       const nextBatch = selectBatch(
         candidates,
@@ -722,6 +725,16 @@ export class DoomscrollView extends ItemView {
     return JSON.stringify(batchSettings);
   }
 
+  private shouldIncludePreview(preview: NotePreview): boolean {
+    if (preview.attachment) {
+      return this.plugin.data.settings.showNonMarkdownFiles;
+    }
+    return (
+      this.plugin.data.settings.includeMediaOnlyNotes ||
+      !isMediaOnlyPreview(preview)
+    );
+  }
+
   private getFrontmatterPropertiesKey(): string {
     return JSON.stringify({
       before: this.plugin.data.settings.frontmatterBeforeProps ?? [],
@@ -836,7 +849,9 @@ export class DoomscrollView extends ItemView {
     // Snippet is rendered on demand from a bounded Markdown fragment.
     const snippetEl = card.createDiv('doomscroll-card-snippet');
     this.setSnippetPreviewSize(snippetEl);
-    snippetEl.textContent = 'Loading preview…';
+    snippetEl.textContent = preview.attachment
+      ? attachmentLabel(preview.path)
+      : 'Loading preview…';
     this.renderCardFrontmatter(card, preview, 'before');
     this.renderCardFrontmatter(card, preview, 'after');
 
@@ -898,6 +913,11 @@ export class DoomscrollView extends ItemView {
     const file = this.plugin.app.vault.getAbstractFileByPath(preview.path);
     if (!(file instanceof TFile)) {
       if (isCurrent()) snippetEl.textContent = '(no preview text)';
+      return;
+    }
+
+    if (preview.attachment) {
+      if (isCurrent()) snippetEl.textContent = attachmentLabel(preview.path);
       return;
     }
 
@@ -1086,6 +1106,22 @@ export class DoomscrollView extends ItemView {
 
     const snippetEl = card.querySelector('.doomscroll-card-snippet');
     if (!(snippetEl instanceof HTMLElement)) return;
+
+    if (preview.attachment) {
+      if (preview.imagePath && isImagePath(file.path)) {
+        const image = card.querySelector<HTMLImageElement>(
+          '.doomscroll-card-image'
+        );
+        if (image) {
+          image.src = '';
+          image.dataset.src = preview.imagePath;
+          this.setupImageLazyLoad(image, getImageDimensionCacheKey(preview));
+        }
+      }
+      snippetEl.textContent = attachmentLabel(preview.path);
+      this.cacheCardSize(card);
+      return;
+    }
 
     invalidateCardSizeCache(file.path);
     card.style.removeProperty('min-height');

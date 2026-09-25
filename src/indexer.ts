@@ -5,6 +5,7 @@ import {
   hasMediaEmbed,
   hasTextualPreviewContent,
 } from './extract';
+import { isImagePath } from './media';
 import { compileGlob } from './glob';
 import { matchesSearchQuery } from './search';
 
@@ -20,6 +21,10 @@ export class Indexer {
   constructor(app: App, data: PluginData) {
     this.app = app;
     this.data = data;
+  }
+
+  markDirty(): void {
+    this.lastRefreshStartedAt = 0;
   }
 
   async refreshIfStale(
@@ -64,12 +69,13 @@ export class Indexer {
       excludeGlobs: this.data.settings.excludeGlobs,
       searchQuery: this.data.settings.searchQuery,
       frontmatterImageProps: this.data.settings.frontmatterImageProps,
+      showNonMarkdownFiles: this.data.settings.showNonMarkdownFiles,
     });
   }
 
   getCandidateFiles(): TFile[] {
     const candidates: TFile[] = [];
-    const allFiles = this.app.vault.getMarkdownFiles();
+    const allFiles = this.app.vault.getFiles();
     const excludeFolders = this.data.settings.excludeFolders
       .map((folderPath) => folderPath.replace(/\/+$/, ''))
       .filter((folderPath) => folderPath.length > 0);
@@ -113,7 +119,13 @@ export class Indexer {
         continue;
       }
 
-      if (excludeTags.size === 0) {
+      // Standalone attachments cannot have Markdown tags. They still pass
+      // folder/glob filters and can be matched by path search terms.
+      const isMarkdown = file.extension.toLowerCase() === 'md';
+      if (!isMarkdown && !this.data.settings.showNonMarkdownFiles) {
+        continue;
+      }
+      if (!isMarkdown || excludeTags.size === 0) {
         candidates.push(file);
         continue;
       }
@@ -183,6 +195,36 @@ export class Indexer {
         chunk.map(async (file) => {
           let content: string | null = null;
           let fileCache = this.app.metadataCache.getFileCache(file);
+          const isMarkdown = file.extension.toLowerCase() === 'md';
+
+          if (!isMarkdown) {
+            if (
+              searchQuery &&
+              !matchesSearchQuery(searchQuery, {
+                path: file.path,
+                content: '',
+                frontmatter: undefined,
+              })
+            ) {
+              return;
+            }
+
+            matchedCandidatePaths.add(file.path);
+            if (
+              this.data.previews[file.path]?.mtime === file.stat.mtime &&
+              this.data.previews[file.path]?.attachment
+            ) {
+              return;
+            }
+
+            this.data.previews[file.path] = {
+              mtime: file.stat.mtime,
+              mediaOnly: true,
+              attachment: true,
+              ...(isImagePath(file.path) ? { imagePath: file.path } : {}),
+            };
+            return;
+          }
 
           if (searchQuery) {
             content = await this.app.vault.cachedRead(file);
@@ -265,6 +307,14 @@ export class Indexer {
       lookupPath = decodeURIComponent(imagePath);
     } catch {
       // Not valid percent-encoding — use as-is.
+    }
+
+    // A standalone attachment points directly at itself. Resolve it without
+    // asking the metadata cache to interpret the path as a link from that
+    // same file.
+    const directFile = this.app.vault.getAbstractFileByPath(lookupPath);
+    if (directFile instanceof TFile) {
+      return this.app.vault.getResourcePath(directFile);
     }
 
     // Try to resolve as a vault path

@@ -35,6 +35,7 @@ Same scroll. Your content.
 - Back button for the batch you should not have reshuffled
 - Filters for folders, tags, and filename patterns
 - Cover images from frontmatter, Markdown, or HTML
+- Standalone vault attachments, including images that are not linked from a note
 - Markdown previews with an optional Simplified view
 - Lazy image loading
 - Works on desktop and mobile
@@ -65,6 +66,10 @@ Same scroll. Your content.
 - **Batch size** (5 to 50): How many cards to show per reshuffle (default: 20)
 - **Infinite scrolling**: Load more notes automatically as you reach the end;
   when enabled, batch size is fixed for incremental loading
+- **Include media-only notes**: Show Markdown notes containing only images or
+  other attachments (default: on)
+- **Show non-Markdown files**: Show standalone vault files such as images,
+  PDFs, and other attachments (default: on)
 - **Simplified view**: Show concise previews with readable tables, links, and
   code; turn off for full Markdown formatting (default: on)
 - **Preview size**: Show a small, medium, or large text preview (default:

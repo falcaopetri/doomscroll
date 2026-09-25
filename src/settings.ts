@@ -54,6 +54,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   batchSize: 20,
   infiniteScroll: false,
   includeMediaOnlyNotes: true,
+  showNonMarkdownFiles: true,
   simplifiedView: true,
   previewSize: 'medium',
   openNoteBehavior: 'tab',
@@ -97,8 +98,13 @@ export class DoomscrollSettingTab extends PluginSettingTab {
       },
       {
         name: 'Include media-only notes',
-        desc: 'Show notes that contain only images, PDFs, or other attachments',
+        desc: 'Show Markdown notes containing only images or other attachments',
         control: { type: 'toggle', key: 'includeMediaOnlyNotes' },
+      },
+      {
+        name: 'Show non-Markdown files',
+        desc: 'Show standalone vault files such as images, PDFs, and other attachments',
+        control: { type: 'toggle', key: 'showNonMarkdownFiles' },
       },
       {
         name: 'Simplified view',
@@ -206,6 +212,8 @@ export class DoomscrollSettingTab extends PluginSettingTab {
         return settings.infiniteScroll;
       case 'includeMediaOnlyNotes':
         return settings.includeMediaOnlyNotes;
+      case 'showNonMarkdownFiles':
+        return settings.showNonMarkdownFiles;
       case 'simplifiedView':
         return settings.simplifiedView;
       case 'previewSize':
@@ -245,6 +253,10 @@ export class DoomscrollSettingTab extends PluginSettingTab {
       case 'includeMediaOnlyNotes':
         if (typeof value !== 'boolean') return;
         settings.includeMediaOnlyNotes = value;
+        break;
+      case 'showNonMarkdownFiles':
+        if (typeof value !== 'boolean') return;
+        settings.showNonMarkdownFiles = value;
         break;
       case 'simplifiedView':
         if (typeof value !== 'boolean') return;
@@ -352,12 +364,24 @@ export class DoomscrollSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Include media-only notes')
-      .setDesc('Show notes that contain only images, PDFs, or other attachments')
+      .setDesc('Show Markdown notes containing only images or other attachments')
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.data.settings.includeMediaOnlyNotes)
           .onChange(async (value) => {
             this.plugin.data.settings.includeMediaOnlyNotes = value;
+            await this.plugin.saveSettingsAndRefreshViews();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Show non-Markdown files')
+      .setDesc('Show standalone vault files such as images, PDFs, and other attachments')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.data.settings.showNonMarkdownFiles)
+          .onChange(async (value) => {
+            this.plugin.data.settings.showNonMarkdownFiles = value;
             await this.plugin.saveSettingsAndRefreshViews();
           })
       );

@@ -5,6 +5,7 @@ export interface PluginSettings {
   batchSize: number;
   infiniteScroll: boolean;
   includeMediaOnlyNotes: boolean;
+  showNonMarkdownFiles: boolean;
   simplifiedView: boolean;
   previewSize: PreviewSize;
   openNoteBehavior: OpenNoteBehavior;
@@ -34,6 +35,9 @@ export interface StoredNotePreview {
   // don't, and skipping the key avoids paying for "imagePath":null on each.
   imagePath?: string;
   mediaOnly?: true;
+  // True when the feed item is a non-Markdown vault file rather than a note
+  // containing an attachment embed.
+  attachment?: true;
   // Legacy cached previews may still contain a snippet. New previews render
   // snippets on demand so this field is intentionally optional.
   snippet?: string;

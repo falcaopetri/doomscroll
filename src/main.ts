@@ -4,7 +4,7 @@ import { DEFAULT_SETTINGS, DoomscrollSettingTab } from './settings';
 import { Indexer } from './indexer';
 import { DoomscrollView, VIEW_TYPE_DOOMSCROLL } from './view';
 
-const INDEX_FORMAT_VERSION = 2;
+const INDEX_FORMAT_VERSION = 3;
 
 export default class DoomscrollPlugin extends Plugin {
   data!: PluginData;
