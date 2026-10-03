@@ -72,11 +72,13 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 1rem;
-  align-self: center;
   box-sizing: border-box;
+  align-self: stretch;
   width: 100%;
-  max-width: calc(var(--file-line-width, 700px) + 2rem);
+  /* Keep cards in a centered column, but let the scroller span the whole
+   * view so the wheel also works over the margins around the cards. */
+  padding: 1rem
+    max(1rem, calc((100% - (var(--file-line-width, 700px) + 2rem)) / 2 + 1rem));
 }
 
 .doomscroll-card {
