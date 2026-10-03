@@ -184,6 +184,7 @@ export default class DoomscrollPlugin extends Plugin {
     )[0];
 
     if (existingLeaf) {
+      this.keepTabPermanent(existingLeaf);
       await this.app.workspace.revealLeaf(existingLeaf);
       const view = existingLeaf.view;
       if (view instanceof DoomscrollView) {
@@ -198,7 +199,28 @@ export default class DoomscrollPlugin extends Plugin {
       type: VIEW_TYPE_DOOMSCROLL,
       active: true,
     });
+    this.keepTabPermanent(leaf);
     await this.app.workspace.revealLeaf(leaf);
+  }
+
+  /**
+   * Preview-tab plugins (e.g. Open Tab Settings) mark a freshly opened tab as
+   * "preview" (italic title) and replace it the next time something opens in a
+   * new tab, which would swallow the feed. Opt the feed out when such a plugin
+   * is present.
+   */
+  private keepTabPermanent(leaf: WorkspaceLeaf): void {
+    const plugins = (
+      this.app as unknown as {
+        plugins?: {
+          plugins?: Record<
+            string,
+            { setLeafIsPreview?: (leaf: WorkspaceLeaf, preview: boolean) => void }
+          >;
+        };
+      }
+    ).plugins?.plugins;
+    plugins?.['open-tab-settings']?.setLeafIsPreview?.(leaf, false);
   }
 
   async saveSettings(): Promise<void> {
