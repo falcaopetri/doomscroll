@@ -921,6 +921,8 @@ export class DoomscrollView extends ItemView {
   ): HTMLElement {
     const card = container.createDiv('doomscroll-card');
     card.dataset.path = preview.path;
+    // Lets Pocket Bird (with data-birb-target support) perch on the card.
+    card.setAttribute('data-birb-target', '');
     card.setAttribute('role', 'article');
     card.tabIndex = -1;
     card.setAttribute('aria-label', preview.title);
