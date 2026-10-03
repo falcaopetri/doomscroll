@@ -20,6 +20,7 @@ import {
 import { selectBatch } from './selector';
 import { pickCardIndex } from './navigation';
 import { ShortcutsModal } from './help';
+import { PeekModal } from './peek';
 import { recordView } from './history';
 import { removePathFromBatches } from './batches';
 import {
@@ -172,6 +173,7 @@ export class DoomscrollView extends ItemView {
     bind(['j'], () => this.moveCardFocus(1));
     bind(['k'], () => this.moveCardFocus(-1));
     bind(['Enter', 'o'], () => this.openFocusedCard());
+    bind([' '], () => this.peekFocusedCard());
     bind(['r'], () => void this.showNewBatch());
     bind(['p'], () => void this.showPreviousBatch());
     bind(['Home'], () => this.focusCardAt('first'));
@@ -1334,20 +1336,42 @@ export class DoomscrollView extends ItemView {
     await this.plugin.saveSettings();
   }
 
+  private recordViewed(path: string): void {
+    // A very quick tap can happen before IntersectionObserver fires.
+    if (this.viewedPathsInBatch.has(path)) return;
+    this.viewedPathsInBatch.add(path);
+    this.plugin.data.history = recordView(
+      this.plugin.data.history,
+      path,
+      Date.now()
+    );
+    this.scheduleHistorySave();
+  }
+
+  private peekFocusedCard(): void {
+    const path = this.containerEl.querySelector<HTMLElement>(
+      '.doomscroll-card-focused'
+    )?.dataset.path;
+    const preview = this.currentBatch.find((item) => item.path === path);
+    const file = path
+      ? this.plugin.app.vault.getAbstractFileByPath(path)
+      : null;
+    if (!preview || !(file instanceof TFile)) return;
+    // Only notes and images have an in-modal view; other files open normally.
+    if (file.extension !== 'md' && !isImagePath(file.path)) {
+      void this.openPreview(preview);
+      return;
+    }
+
+    this.recordViewed(file.path);
+    new PeekModal(this.app, file, () => void this.openPreview(preview)).open();
+  }
+
   private async openPreview(preview: NotePreview): Promise<void> {
     const file = this.plugin.app.vault.getAbstractFileByPath(preview.path);
 
     if (file instanceof TFile) {
-      // A very quick tap can happen before IntersectionObserver fires.
-      if (!this.viewedPathsInBatch.has(preview.path)) {
-        this.viewedPathsInBatch.add(preview.path);
-        this.plugin.data.history = recordView(
-          this.plugin.data.history,
-          preview.path,
-          Date.now()
-        );
-        this.scheduleHistorySave();
-      }
+      this.recordViewed(preview.path);
 
       const behavior = this.plugin.data.settings.openNoteBehavior;
       const leaf =
