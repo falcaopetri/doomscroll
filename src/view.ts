@@ -237,13 +237,16 @@ export class DoomscrollView extends ItemView {
     this.focusedPath = card.dataset.path ?? null;
     // Real DOM focus lets screen readers follow the cursor.
     card.focus({ preventScroll: true });
-    const reduceMotion = window.matchMedia(
-      '(prefers-reduced-motion: reduce)'
-    ).matches;
+    const reduceAnimations = this.plugin.data.settings.reduceAnimations;
     if (scroll) {
-      card.classList.remove('doomscroll-card-navigating');
-      void card.offsetWidth;
-      card.classList.add('doomscroll-card-navigating');
+      if (reduceAnimations) {
+        this.cancelScrollAnimation();
+        card.classList.remove('doomscroll-card-navigating');
+      } else {
+        card.classList.remove('doomscroll-card-navigating');
+        void card.offsetWidth;
+        card.classList.add('doomscroll-card-navigating');
+      }
 
       const body = this.containerEl.querySelector<HTMLElement>(
         '.doomscroll-body'
@@ -254,17 +257,22 @@ export class DoomscrollView extends ItemView {
         const scrollMargin = Number.parseFloat(
           window.getComputedStyle(card).scrollMarginTop
         );
-        this.animateScrollTo(
-          body,
+        const targetTop =
           body.scrollTop +
-            cardTop -
-            bodyTop -
-            (Number.isFinite(scrollMargin) ? scrollMargin : 0)
-        );
+          cardTop -
+          bodyTop -
+          (Number.isFinite(scrollMargin) ? scrollMargin : 0);
+        if (reduceAnimations) {
+          this.cancelScrollAnimation();
+          const maxScrollTop = Math.max(0, body.scrollHeight - body.clientHeight);
+          body.scrollTop = Math.max(0, Math.min(targetTop, maxScrollTop));
+        } else {
+          this.animateScrollTo(body, targetTop);
+        }
       } else {
         card.scrollIntoView({
           block: 'start',
-          behavior: reduceMotion ? 'auto' : 'smooth',
+          behavior: reduceAnimations ? 'auto' : 'smooth',
         });
       }
     }
@@ -396,6 +404,7 @@ export class DoomscrollView extends ItemView {
   async onOpen(): Promise<void> {
     this.isClosed = false;
     this.snippetRenderGenerations = new WeakMap();
+    this.syncAnimationPreference();
     if (this.hasRendered && this.containerEl.querySelector('.doomscroll-body')) {
       this.resumeRenderedView();
       return;
@@ -455,7 +464,22 @@ export class DoomscrollView extends ItemView {
     }
   }
 
+  private syncAnimationPreference(): void {
+    const reduceAnimations = this.plugin.data.settings.reduceAnimations;
+    this.containerEl.classList.toggle(
+      'doomscroll-reduce-animation',
+      reduceAnimations
+    );
+    if (reduceAnimations) {
+      this.cancelScrollAnimation();
+      this.containerEl
+        .querySelectorAll('.doomscroll-card-navigating')
+        .forEach((card) => card.classList.remove('doomscroll-card-navigating'));
+    }
+  }
+
   async refreshForCurrentSettings(): Promise<void> {
+    this.syncAnimationPreference();
     if (this.isRefreshing) {
       this.pendingSettingsRefresh = true;
       return;
@@ -524,6 +548,7 @@ export class DoomscrollView extends ItemView {
   private async render(): Promise<void> {
     this.containerEl.empty();
     this.containerEl.addClass('doomscroll-view-container');
+    this.syncAnimationPreference();
 
     // Header row
     const header = this.containerEl.createDiv('doomscroll-header');
@@ -1043,6 +1068,7 @@ export class DoomscrollView extends ItemView {
   private getBatchSettingsKey(): string {
     const {
       simplifiedView: _simplifiedView,
+      reduceAnimations: _reduceAnimations,
       previewSize: _previewSize,
       frontmatterBeforeProps: _frontmatterBeforeProps,
       frontmatterAfterProps: _frontmatterAfterProps,

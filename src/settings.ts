@@ -56,6 +56,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   includeMediaOnlyNotes: true,
   showNonMarkdownFiles: true,
   simplifiedView: true,
+  reduceAnimations: false,
   previewSize: 'medium',
   openNoteBehavior: 'tab',
   excludeFolders: [],
@@ -110,6 +111,11 @@ export class DoomscrollSettingTab extends PluginSettingTab {
         name: 'Simplified view',
         desc: 'Show concise previews with readable tables, links, and code; turn off for full Markdown formatting.',
         control: { type: 'toggle', key: 'simplifiedView' },
+      },
+      {
+        name: 'Reduce animation',
+        desc: 'Disable card and scrolling animations during keyboard navigation',
+        control: { type: 'toggle', key: 'reduceAnimations' },
       },
       {
         name: 'Preview size',
@@ -216,6 +222,8 @@ export class DoomscrollSettingTab extends PluginSettingTab {
         return settings.showNonMarkdownFiles;
       case 'simplifiedView':
         return settings.simplifiedView;
+      case 'reduceAnimations':
+        return settings.reduceAnimations;
       case 'previewSize':
         return settings.previewSize;
       case 'searchQuery':
@@ -261,6 +269,10 @@ export class DoomscrollSettingTab extends PluginSettingTab {
       case 'simplifiedView':
         if (typeof value !== 'boolean') return;
         settings.simplifiedView = value;
+        break;
+      case 'reduceAnimations':
+        if (typeof value !== 'boolean') return;
+        settings.reduceAnimations = value;
         break;
       case 'previewSize':
         if (!isPreviewSize(value)) return;
@@ -396,6 +408,18 @@ export class DoomscrollSettingTab extends PluginSettingTab {
           .setValue(this.plugin.data.settings.simplifiedView !== false)
           .onChange(async (value) => {
             this.plugin.data.settings.simplifiedView = value;
+            await this.plugin.saveSettingsAndRefreshViews();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Reduce animation')
+      .setDesc('Disable card and scrolling animations during keyboard navigation')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.data.settings.reduceAnimations)
+          .onChange(async (value) => {
+            this.plugin.data.settings.reduceAnimations = value;
             await this.plugin.saveSettingsAndRefreshViews();
           })
       );

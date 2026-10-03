@@ -126,6 +126,10 @@ export default class DoomscrollPlugin extends Plugin {
       migrated = true;
     }
 
+    if (!loadedData?.settings || !('reduceAnimations' in loadedData.settings)) {
+      migrated = true;
+    }
+
     if (!isPreviewSize(this.data.settings.previewSize)) {
       this.data.settings.previewSize = 'medium';
       migrated = true;

@@ -7,6 +7,7 @@ export interface PluginSettings {
   includeMediaOnlyNotes: boolean;
   showNonMarkdownFiles: boolean;
   simplifiedView: boolean;
+  reduceAnimations: boolean;
   previewSize: PreviewSize;
   openNoteBehavior: OpenNoteBehavior;
   excludeFolders: string[];
