@@ -4,6 +4,7 @@ import {
   EventRef,
   Events,
   MarkdownRenderer,
+  Platform,
   Scope,
   WorkspaceLeaf,
   TFile,
@@ -163,6 +164,8 @@ export class DoomscrollView extends ItemView {
   }
 
   private registerKeyboardShortcuts(): void {
+    if (Platform.isMobile) return;
+
     // View-scoped, so the keys only apply while the feed has focus.
     const scope = this.scope ?? new Scope(this.app.scope);
     this.scope = scope;
@@ -360,7 +363,7 @@ export class DoomscrollView extends ItemView {
       this.batchHistory.length - 1
     );
     this.restoredScrollTop = restored.scrollTop;
-    this.focusedPath = restored.focusedPath;
+    this.focusedPath = Platform.isMobile ? null : restored.focusedPath;
     this.restoredScrollAnchor = restored.scrollAnchor;
     this.batchSettingsKey = this.getBatchSettingsKey();
 
@@ -1214,7 +1217,7 @@ export class DoomscrollView extends ItemView {
 
     // Click handler
     card.addEventListener('click', () => {
-      this.focusCard(card, false);
+      if (!Platform.isMobile) this.focusCard(card, false);
       void this.renderSnippet(preview, snippetEl);
       void this.openPreview(preview);
     });
