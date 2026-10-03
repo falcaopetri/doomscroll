@@ -4,6 +4,7 @@ import {
   EventRef,
   Events,
   MarkdownRenderer,
+  Scope,
   WorkspaceLeaf,
   TFile,
   setIcon,
@@ -17,6 +18,8 @@ import {
   toNotePreview,
 } from './types';
 import { selectBatch } from './selector';
+import { pickCardIndex } from './navigation';
+import { ShortcutsModal } from './help';
 import { recordView } from './history';
 import { removePathFromBatches } from './batches';
 import {
@@ -100,6 +103,7 @@ export class DoomscrollView extends ItemView {
   private historySaveTimer: number | null = null;
   private historySavePending = false;
   private restoredScrollTop = 0;
+  private focusedPath: string | null = null;
   private renderedSnippetCache = new Map<string, HTMLElement>();
   private renderedSimplifiedView: boolean | null = null;
   private renderedPreviewSize: PreviewSize | null = null;
@@ -113,6 +117,7 @@ export class DoomscrollView extends ItemView {
     super(leaf);
     this.plugin = plugin;
     this.containerEl = this.contentEl;
+    this.registerKeyboardShortcuts();
     this.registerEvent(
       this.plugin.app.vault.on('modify', (file) => {
         if (file instanceof TFile) {
@@ -150,6 +155,91 @@ export class DoomscrollView extends ItemView {
         void this.removeDeletedNote(file.path);
       })
     );
+  }
+
+  private registerKeyboardShortcuts(): void {
+    // View-scoped, so the keys only apply while the feed has focus.
+    const scope = this.scope ?? new Scope(this.app.scope);
+    this.scope = scope;
+    const bind = (keys: string[], action: () => void): void => {
+      for (const key of keys) {
+        scope.register([], key, () => {
+          action();
+          return false;
+        });
+      }
+    };
+    bind(['j'], () => this.moveCardFocus(1));
+    bind(['k'], () => this.moveCardFocus(-1));
+    bind(['Enter', 'o'], () => this.openFocusedCard());
+    bind(['r'], () => void this.showNewBatch());
+    bind(['p'], () => void this.showPreviousBatch());
+    bind(['Home'], () => this.focusCardAt('first'));
+    bind(['End'], () => this.focusCardAt('last'));
+    bind(['Escape'], () => this.clearCardFocus());
+    scope.register(['Shift'], '?', () => {
+      new ShortcutsModal(this.app).open();
+      return false;
+    });
+  }
+
+  private moveCardFocus(delta: 1 | -1): void {
+    const body = this.containerEl.querySelector<HTMLElement>('.doomscroll-body');
+    const cards = Array.from(
+      this.containerEl.querySelectorAll<HTMLElement>('.doomscroll-card')
+    );
+    if (!body || cards.length === 0) return;
+
+    const bodyRect = body.getBoundingClientRect();
+    const next = pickCardIndex(
+      cards.map((card) => card.getBoundingClientRect()),
+      { top: bodyRect.top, bottom: bodyRect.bottom },
+      cards.findIndex((card) =>
+        card.classList.contains('doomscroll-card-focused')
+      ),
+      delta
+    );
+
+    this.focusCard(cards[next]!);
+  }
+
+  private focusCardAt(position: 'first' | 'last'): void {
+    const cards = this.containerEl.querySelectorAll<HTMLElement>('.doomscroll-card');
+    const target = position === 'first' ? cards[0] : cards[cards.length - 1];
+    if (target) this.focusCard(target);
+  }
+
+  private clearCardFocus(): void {
+    this.containerEl
+      .querySelector('.doomscroll-card-focused')
+      ?.classList.remove('doomscroll-card-focused');
+    this.focusedPath = null;
+  }
+
+  /** Marks a card as the keyboard cursor and scrolls it into view. */
+  private focusCard(card: HTMLElement, scroll = true): void {
+    this.containerEl
+      .querySelector('.doomscroll-card-focused')
+      ?.classList.remove('doomscroll-card-focused');
+    card.classList.add('doomscroll-card-focused');
+    this.focusedPath = card.dataset.path ?? null;
+    // Real DOM focus lets screen readers follow the cursor.
+    card.focus({ preventScroll: true });
+    if (scroll) {
+      const reduceMotion = window.matchMedia(
+        '(prefers-reduced-motion: reduce)'
+      ).matches;
+      card.scrollIntoView({
+        block: 'start',
+        behavior: reduceMotion ? 'auto' : 'smooth',
+      });
+    }
+  }
+
+  private openFocusedCard(): void {
+    this.containerEl
+      .querySelector<HTMLElement>('.doomscroll-card-focused')
+      ?.click();
   }
 
   getViewType(): string {
@@ -320,6 +410,8 @@ export class DoomscrollView extends ItemView {
 
     // Body - scrollable container
     const bodyContainer = this.containerEl.createDiv('doomscroll-body');
+    bodyContainer.setAttribute('role', 'feed');
+    bodyContainer.setAttribute('aria-label', 'Doomscroll');
     bodyContainer.addEventListener(
       'scroll',
       () => {
@@ -507,6 +599,19 @@ export class DoomscrollView extends ItemView {
     for (const preview of this.currentBatch) {
       const card = this.renderCard(container, preview);
       this.cardObserver.observe(card);
+    }
+
+    // Keep the keyboard cursor on the same card across re-renders (e.g. coming
+    // back from an opened note); a different batch simply has no match.
+    const restored = this.focusedPath
+      ? Array.from(
+          container.querySelectorAll<HTMLElement>('.doomscroll-card')
+        ).find((card) => card.dataset.path === this.focusedPath)
+      : undefined;
+    if (restored) {
+      restored.classList.add('doomscroll-card-focused');
+    } else {
+      this.focusedPath = null;
     }
 
     // Reshuffle button at end
@@ -814,6 +919,9 @@ export class DoomscrollView extends ItemView {
   ): HTMLElement {
     const card = container.createDiv('doomscroll-card');
     card.dataset.path = preview.path;
+    card.setAttribute('role', 'article');
+    card.tabIndex = -1;
+    card.setAttribute('aria-label', preview.title);
     const inlineAttachmentPreview =
       preview.attachment &&
       (isImagePath(preview.path) ||
@@ -895,6 +1003,7 @@ export class DoomscrollView extends ItemView {
 
     // Click handler
     card.addEventListener('click', () => {
+      this.focusCard(card, false);
       void this.renderSnippet(preview, snippetEl);
       void this.openPreview(preview);
     });

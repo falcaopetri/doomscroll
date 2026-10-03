@@ -96,6 +96,43 @@
   border-color: var(--text-faint);
 }
 
+/* Specific enough to beat themes/snippets that restyle .doomscroll-card and
+ * its :hover. A single accent border plus a soft halo (no second ring). */
+.doomscroll-view-container .doomscroll-card.doomscroll-card-focused {
+  border-color: var(--interactive-accent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--interactive-accent) 22%, transparent),
+    0 6px 20px color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+  outline: none;
+  scroll-margin-top: 0.75rem;
+}
+
+.doomscroll-card:focus {
+  outline: none;
+}
+
+.doomscroll-help-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.5rem 1.25rem;
+  margin: 0;
+}
+
+.doomscroll-help-list dt {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.doomscroll-help-list dd {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.doomscroll-help-list kbd {
+  min-width: 1.6em;
+  text-align: center;
+}
+
 .doomscroll-card-titlerow {
   display: flex;
   align-items: baseline;
