@@ -1,4 +1,4 @@
-import { Plugin, normalizePath } from 'obsidian';
+import { Plugin, WorkspaceLeaf, normalizePath } from 'obsidian';
 import { isPreviewSize, PluginData, StoredNotePreview } from './types';
 import { DEFAULT_SETTINGS, DoomscrollSettingTab } from './settings';
 import { Indexer } from './indexer';
@@ -10,6 +10,8 @@ export default class DoomscrollPlugin extends Plugin {
   data!: PluginData;
   indexer!: Indexer;
   private settingsRefreshTimer: number | null = null;
+  /** Leaves a card opened a note in, and how (new tab vs. replacing the feed). */
+  openedFromFeed = new WeakMap<WorkspaceLeaf, 'tab' | 'reuse'>();
 
   async onload(): Promise<void> {
     type LegacySettings = PluginData['settings'] & {
@@ -166,6 +168,32 @@ export default class DoomscrollPlugin extends Plugin {
       name: 'Open feed',
       callback: () => {
         void this.activateView();
+      },
+    });
+
+    // Go back to the feed from a note opened by it: close that tab, or step
+    // back in the leaf's history when the note replaced the feed.
+    this.addCommand({
+      id: 'back-to-feed',
+      name: 'Back to feed',
+      callback: () => {
+        const active = this.app.workspace.getMostRecentLeaf();
+        const mode = active ? this.openedFromFeed.get(active) : undefined;
+        if (mode === 'reuse') {
+          (
+            this.app as unknown as {
+              commands: { executeCommandById(id: string): boolean };
+            }
+          ).commands.executeCommandById('app:go-back');
+          return;
+        }
+        // Reveal the feed before closing the note: detaching the active leaf
+        // first lets Obsidian (or tab plugins) activate a neighbouring tab.
+        void this.activateView().then(() => {
+          if (active && mode === 'tab') {
+            active.detach();
+          }
+        });
       },
     });
 

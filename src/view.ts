@@ -1378,6 +1378,12 @@ export class DoomscrollView extends ItemView {
         behavior === 'reuse'
           ? this.leaf
           : this.plugin.app.workspace.getLeaf(behavior);
+      // Tab plugins (e.g. preview tabs) can hand back the feed's own leaf for
+      // "new tab"; the note then replaces the feed, so treat it as "reuse".
+      this.plugin.openedFromFeed.set(
+        leaf,
+        behavior === 'reuse' || leaf === this.leaf ? 'reuse' : 'tab'
+      );
       await leaf.openFile(file);
     }
   }
