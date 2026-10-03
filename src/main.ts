@@ -1,4 +1,4 @@
-import { Plugin, normalizePath } from 'obsidian';
+import { Plugin, WorkspaceLeaf, normalizePath } from 'obsidian';
 import { isPreviewSize, PluginData, StoredNotePreview } from './types';
 import { DEFAULT_SETTINGS, DoomscrollSettingTab } from './settings';
 import { Indexer } from './indexer';
