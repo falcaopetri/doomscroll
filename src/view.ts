@@ -4,6 +4,7 @@ import {
   EventRef,
   Events,
   MarkdownRenderer,
+  Scope,
   WorkspaceLeaf,
   TFile,
   setIcon,
@@ -17,6 +18,8 @@ import {
   toNotePreview,
 } from './types';
 import { selectBatch } from './selector';
+import { pickCardIndex } from './navigation';
+import { ShortcutsModal } from './help';
 import { recordView } from './history';
 import { removePathFromBatches } from './batches';
 import {
@@ -64,6 +67,8 @@ interface DoomscrollViewState {
   batchHistoryPaths: string[][];
   batchHistoryCursor: number;
   scrollTop: number;
+  focusedPath: string | null;
+  scrollAnchor: { path: string; topOffset: number } | null;
 }
 
 interface DataviewApiLike {
@@ -90,6 +95,7 @@ export class DoomscrollView extends ItemView {
   private infiniteScrollLoading = false;
   private infiniteScrollExhausted = false;
   viewedPathsInBatch: Set<string> = new Set();
+  private imageLoadListeners = new WeakSet<HTMLImageElement>();
   batchHistory: NotePreview[][] = [];
   batchHistoryCursor: number = -1;
   backButton: HTMLButtonElement | null = null;
@@ -100,6 +106,9 @@ export class DoomscrollView extends ItemView {
   private historySaveTimer: number | null = null;
   private historySavePending = false;
   private restoredScrollTop = 0;
+  private restoredScrollAnchor: { path: string; topOffset: number } | null = null;
+  private focusedPath: string | null = null;
+  private scrollAnimationFrame: number | null = null;
   private renderedSnippetCache = new Map<string, HTMLElement>();
   private renderedSimplifiedView: boolean | null = null;
   private renderedPreviewSize: PreviewSize | null = null;
@@ -113,6 +122,7 @@ export class DoomscrollView extends ItemView {
     super(leaf);
     this.plugin = plugin;
     this.containerEl = this.contentEl;
+    this.registerKeyboardShortcuts();
     this.registerEvent(
       this.plugin.app.vault.on('modify', (file) => {
         if (file instanceof TFile) {
@@ -152,6 +162,152 @@ export class DoomscrollView extends ItemView {
     );
   }
 
+  private registerKeyboardShortcuts(): void {
+    // View-scoped, so the keys only apply while the feed has focus.
+    const scope = this.scope ?? new Scope(this.app.scope);
+    this.scope = scope;
+    const bind = (keys: string[], action: () => void): void => {
+      for (const key of keys) {
+        scope.register([], key, () => {
+          action();
+          return false;
+        });
+      }
+    };
+    bind(['j', 'ArrowDown'], () => this.moveCardFocus(1));
+    bind(['k', 'ArrowUp'], () => this.moveCardFocus(-1));
+    bind(['Enter', 'o'], () => this.openFocusedCard());
+    bind(['r'], () => void this.showNewBatch());
+    bind(['p'], () => void this.showPreviousBatch());
+    bind(['Home'], () => this.focusCardAt('first'));
+    bind(['End'], () => this.focusCardAt('last'));
+    bind(['Escape'], () => this.clearCardFocus());
+    scope.register(['Shift'], '?', () => {
+      new ShortcutsModal(this.app).open();
+      return false;
+    });
+  }
+
+  private moveCardFocus(delta: 1 | -1): void {
+    const body = this.containerEl.querySelector<HTMLElement>('.doomscroll-body');
+    const cards = Array.from(
+      this.containerEl.querySelectorAll<HTMLElement>('.doomscroll-card')
+    );
+    if (!body || cards.length === 0) return;
+
+    const bodyRect = body.getBoundingClientRect();
+    const next = pickCardIndex(
+      cards.map((card) => card.getBoundingClientRect()),
+      { top: bodyRect.top, bottom: bodyRect.bottom },
+      cards.findIndex((card) =>
+        card.classList.contains('doomscroll-card-focused')
+      ),
+      delta
+    );
+
+    this.focusCard(cards[next]!);
+  }
+
+  private focusCardAt(position: 'first' | 'last'): void {
+    const cards = this.containerEl.querySelectorAll<HTMLElement>('.doomscroll-card');
+    const target = position === 'first' ? cards[0] : cards[cards.length - 1];
+    if (target) this.focusCard(target);
+  }
+
+  private clearCardFocus(): void {
+    this.cancelScrollAnimation();
+    this.containerEl
+      .querySelector('.doomscroll-card-focused')
+      ?.classList.remove('doomscroll-card-focused');
+    this.focusedPath = null;
+    this.containerEl
+      .querySelector<HTMLElement>('.doomscroll-body')
+      ?.focus({ preventScroll: true });
+  }
+
+  /** Marks a card as the keyboard cursor and scrolls it into view. */
+  private focusCard(card: HTMLElement, scroll = true): void {
+    this.containerEl
+      .querySelector('.doomscroll-card-focused')
+      ?.classList.remove('doomscroll-card-focused');
+    card.classList.add('doomscroll-card-focused');
+    this.focusedPath = card.dataset.path ?? null;
+    // Real DOM focus lets screen readers follow the cursor.
+    card.focus({ preventScroll: true });
+    const reduceMotion = window.matchMedia(
+      '(prefers-reduced-motion: reduce)'
+    ).matches;
+    if (scroll) {
+      card.classList.remove('doomscroll-card-navigating');
+      void card.offsetWidth;
+      card.classList.add('doomscroll-card-navigating');
+
+      const body = this.containerEl.querySelector<HTMLElement>(
+        '.doomscroll-body'
+      );
+      if (body) {
+        const bodyTop = body.getBoundingClientRect().top + body.clientTop;
+        const cardTop = card.getBoundingClientRect().top;
+        const scrollMargin = Number.parseFloat(
+          window.getComputedStyle(card).scrollMarginTop
+        );
+        this.animateScrollTo(
+          body,
+          body.scrollTop +
+            cardTop -
+            bodyTop -
+            (Number.isFinite(scrollMargin) ? scrollMargin : 0)
+        );
+      } else {
+        card.scrollIntoView({
+          block: 'start',
+          behavior: reduceMotion ? 'auto' : 'smooth',
+        });
+      }
+    }
+  }
+
+  private animateScrollTo(
+    body: HTMLElement,
+    requestedTop: number
+  ): void {
+    this.cancelScrollAnimation();
+    const maxScrollTop = Math.max(0, body.scrollHeight - body.clientHeight);
+    const targetTop = Math.max(0, Math.min(requestedTop, maxScrollTop));
+    const startTop = body.scrollTop;
+    if (Math.abs(targetTop - startTop) < 1) {
+      body.scrollTop = targetTop;
+      return;
+    }
+
+    const startedAt = performance.now();
+    const duration = 360;
+    const step = (now: number): void => {
+      const progress = Math.min(1, (now - startedAt) / duration);
+      const eased = 1 - (1 - progress) ** 3;
+      body.scrollTop = startTop + (targetTop - startTop) * eased;
+      if (progress < 1) {
+        this.scrollAnimationFrame = window.requestAnimationFrame(step);
+      } else {
+        this.scrollAnimationFrame = null;
+      }
+    };
+    this.scrollAnimationFrame = window.requestAnimationFrame(step);
+  }
+
+  private cancelScrollAnimation(): void {
+    if (this.scrollAnimationFrame !== null) {
+      window.cancelAnimationFrame(this.scrollAnimationFrame);
+      this.scrollAnimationFrame = null;
+    }
+  }
+
+  private openFocusedCard(): void {
+    this.containerEl
+      .querySelector<HTMLElement>('.doomscroll-card-focused')
+      ?.click();
+  }
+
   getViewType(): string {
     return VIEW_TYPE_DOOMSCROLL;
   }
@@ -176,6 +332,9 @@ export class DoomscrollView extends ItemView {
       ),
       batchHistoryCursor: this.batchHistoryCursor,
       scrollTop,
+      focusedPath: this.focusedPath,
+      scrollAnchor:
+        body instanceof HTMLElement ? this.getScrollAnchor(body) : null,
     } satisfies DoomscrollViewState;
   }
 
@@ -183,7 +342,15 @@ export class DoomscrollView extends ItemView {
     const restored = parseViewState(state);
     if (!restored) return;
 
-    this.currentBatch = this.resolvePreviewPaths(restored.batchPaths);
+    const previousBatch = this.currentBatch;
+    const previousPaths = previousBatch.map((preview) => preview.path);
+    const restoredBatch = this.resolvePreviewPaths(restored.batchPaths);
+    const canKeepRenderedDom =
+      this.hasRendered &&
+      previousPaths.length === restoredBatch.length &&
+      previousPaths.every((path, index) => path === restoredBatch[index]?.path) &&
+      Boolean(this.containerEl.querySelector('.doomscroll-body'));
+    this.currentBatch = canKeepRenderedDom ? previousBatch : restoredBatch;
     this.batchHistory = restored.batchHistoryPaths
       .map((paths) => this.resolvePreviewPaths(paths))
       .filter((batch) => batch.length > 0)
@@ -193,18 +360,96 @@ export class DoomscrollView extends ItemView {
       this.batchHistory.length - 1
     );
     this.restoredScrollTop = restored.scrollTop;
+    this.focusedPath = restored.focusedPath;
+    this.restoredScrollAnchor = restored.scrollAnchor;
     this.batchSettingsKey = this.getBatchSettingsKey();
 
     if (this.hasRendered) {
-      this.renderBatch();
-      this.restoreScrollPosition();
+      if (canKeepRenderedDom) {
+        const body = this.containerEl.querySelector<HTMLElement>(
+          '.doomscroll-body'
+        );
+        body
+          ?.querySelector('.doomscroll-card-focused')
+          ?.classList.remove('doomscroll-card-focused');
+        const focused = this.focusedPath
+          ? Array.from(
+              body?.querySelectorAll<HTMLElement>('.doomscroll-card') ?? []
+            ).find((card) => card.dataset.path === this.focusedPath)
+          : undefined;
+        if (focused) {
+          focused.classList.add('doomscroll-card-focused');
+          focused.focus({ preventScroll: true });
+        } else if (this.focusedPath) {
+          this.focusedPath = null;
+        }
+      } else {
+        this.renderBatch();
+        this.restoreScrollPosition();
+      }
     }
   }
 
   async onOpen(): Promise<void> {
     this.isClosed = false;
     this.snippetRenderGenerations = new WeakMap();
+    if (this.hasRendered && this.containerEl.querySelector('.doomscroll-body')) {
+      this.resumeRenderedView();
+      return;
+    }
     await this.render();
+  }
+
+  private resumeRenderedView(): void {
+    const body = this.containerEl.querySelector<HTMLElement>('.doomscroll-body');
+    if (!body) return;
+
+    // Keep the existing DOM, scroll position, and rendered previews when
+    // Obsidian reopens this same view instance after same-tab navigation.
+    this.cardObserver = this.createCardObserver(body);
+    body.querySelectorAll<HTMLElement>('.doomscroll-card').forEach((card) => {
+      const path = card.dataset.path;
+      const snippet = card.querySelector<HTMLElement>(
+        '.doomscroll-card-snippet'
+      );
+      if (
+        !path ||
+        !this.viewedPathsInBatch.has(path) ||
+        snippet?.textContent === 'Loading preview…'
+      ) {
+        this.cardObserver?.observe(card);
+      }
+    });
+    body.querySelectorAll<HTMLImageElement>('img[data-src]').forEach((image) => {
+      if (image.getAttribute('src')) return;
+      const preview = this.currentBatch.find(
+        (candidate) => candidate.path === image.dataset.notePath
+      );
+      if (preview) {
+        this.setupImageLazyLoad(image, getImageDimensionCacheKey(preview));
+      }
+    });
+    body
+      .querySelectorAll<HTMLIFrameElement>('.doomscroll-card-pdf')
+      .forEach((pdf) => {
+        if (!pdf.getAttribute('src')) this.setupPdfLazyLoad(pdf);
+      });
+    body
+      .querySelectorAll<HTMLVideoElement>('.doomscroll-card-video')
+      .forEach((video) => {
+        if (!video.getAttribute('src')) this.setupVideoLazyLoad(video);
+      });
+    this.observeInfiniteScroll(body);
+
+    if (this.focusedPath) {
+      const focused = Array.from(
+        body.querySelectorAll<HTMLElement>('.doomscroll-card')
+      ).find((card) => card.dataset.path === this.focusedPath);
+      if (focused) {
+        focused.classList.add('doomscroll-card-focused');
+        focused.focus({ preventScroll: true });
+      }
+    }
   }
 
   async refreshForCurrentSettings(): Promise<void> {
@@ -320,11 +565,24 @@ export class DoomscrollView extends ItemView {
 
     // Body - scrollable container
     const bodyContainer = this.containerEl.createDiv('doomscroll-body');
+    bodyContainer.setAttribute('role', 'feed');
+    bodyContainer.setAttribute('aria-label', 'Doomscroll');
+    bodyContainer.tabIndex = 0;
     bodyContainer.addEventListener(
       'scroll',
       () => {
         this.restoredScrollTop = bodyContainer.scrollTop;
       },
+      { passive: true }
+    );
+    bodyContainer.addEventListener(
+      'wheel',
+      () => this.cancelScrollAnimation(),
+      { passive: true }
+    );
+    bodyContainer.addEventListener(
+      'pointerdown',
+      () => this.cancelScrollAnimation(),
       { passive: true }
     );
 
@@ -401,16 +659,49 @@ export class DoomscrollView extends ItemView {
     const restore = (): void => {
       const body = this.containerEl.querySelector('.doomscroll-body');
       if (body instanceof HTMLElement) {
-        body.scrollTop = scrollTop;
+        const anchor = this.restoredScrollAnchor;
+        const anchorCard = anchor
+          ? Array.from(
+              body.querySelectorAll<HTMLElement>('.doomscroll-card')
+            ).find((card) => card.dataset.path === anchor.path)
+          : undefined;
+        if (anchor && anchorCard) {
+          const bodyTop = body.getBoundingClientRect().top;
+          const cardTop = anchorCard.getBoundingClientRect().top;
+          body.scrollTop += cardTop - bodyTop - anchor.topOffset;
+        } else {
+          body.scrollTop = scrollTop;
+        }
       }
     };
 
     restore();
     window.requestAnimationFrame(() => {
       restore();
-      window.requestAnimationFrame(restore);
+      window.requestAnimationFrame(() => {
+        restore();
+        window.setTimeout(restore, 100);
+        window.setTimeout(restore, 350);
+        window.setTimeout(restore, 800);
+      });
     });
-    window.setTimeout(restore, 100);
+  }
+
+  private getScrollAnchor(
+    body: HTMLElement
+  ): { path: string; topOffset: number } | null {
+    const bodyTop = body.getBoundingClientRect().top;
+    const bodyBottom = bodyTop + body.clientHeight;
+    for (const card of Array.from(
+      body.querySelectorAll<HTMLElement>('.doomscroll-card')
+    )) {
+      const rect = card.getBoundingClientRect();
+      if (rect.bottom > bodyTop && rect.top < bodyBottom) {
+        const path = card.dataset.path;
+        if (path) return { path, topOffset: rect.top - bodyTop };
+      }
+    }
+    return null;
   }
 
   private renderBatchIntoContainer(
@@ -464,41 +755,7 @@ export class DoomscrollView extends ItemView {
     this.infiniteScrollExhausted = false;
     this.viewedPathsInBatch.clear();
 
-    this.cardObserver = new IntersectionObserver(
-      (entries) => {
-        let historyChanged = false;
-
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-
-          const card = entry.target as HTMLElement;
-          const path = card.dataset.path;
-          const preview = this.currentBatch.find(
-            (candidate) => candidate.path === path
-          );
-          const snippetEl = card.querySelector('.doomscroll-card-snippet');
-          if (preview && snippetEl instanceof HTMLElement) {
-            void this.renderSnippet(preview, snippetEl);
-          }
-
-          if (path && !this.viewedPathsInBatch.has(path)) {
-            this.viewedPathsInBatch.add(path);
-            this.plugin.data.history = recordView(
-              this.plugin.data.history,
-              path,
-              Date.now()
-            );
-            historyChanged = true;
-          }
-          this.cardObserver?.unobserve(card);
-        }
-
-        if (historyChanged) {
-          this.scheduleHistorySave();
-        }
-      },
-      { root: container, threshold: 0.1 }
-    );
+    this.cardObserver = this.createCardObserver(container);
 
     // Clear previous content
     container.empty();
@@ -507,6 +764,20 @@ export class DoomscrollView extends ItemView {
     for (const preview of this.currentBatch) {
       const card = this.renderCard(container, preview);
       this.cardObserver.observe(card);
+    }
+
+    // Keep the keyboard cursor on the same card across re-renders (e.g. coming
+    // back from an opened note); a different batch simply has no match.
+    const restored = this.focusedPath
+      ? Array.from(
+          container.querySelectorAll<HTMLElement>('.doomscroll-card')
+        ).find((card) => card.dataset.path === this.focusedPath)
+      : undefined;
+    if (restored) {
+      restored.classList.add('doomscroll-card-focused');
+      restored.focus({ preventScroll: true });
+    } else {
+      this.focusedPath = null;
     }
 
     // Reshuffle button at end
@@ -522,19 +793,64 @@ export class DoomscrollView extends ItemView {
     });
 
     if (this.plugin.data.settings.infiniteScroll) {
-      const sentinel = container.createDiv(
-        'doomscroll-infinite-scroll-sentinel'
-      );
-      this.infiniteScrollObserver = new IntersectionObserver(
-        (entries) => {
-          if (entries.some((entry) => entry.isIntersecting)) {
-            void this.loadMoreCards(container, sentinel);
-          }
-        },
-        { root: container, rootMargin: '400px' }
-      );
-      this.infiniteScrollObserver.observe(sentinel);
+      const sentinel = container.createDiv('doomscroll-infinite-scroll-sentinel');
+      this.observeInfiniteScroll(container, sentinel);
     }
+  }
+
+  private createCardObserver(container: HTMLElement): IntersectionObserver {
+    return new IntersectionObserver(
+      (entries) => {
+        let historyChanged = false;
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const card = entry.target as HTMLElement;
+          const path = card.dataset.path;
+          const preview = this.currentBatch.find(
+            (candidate) => candidate.path === path
+          );
+          const snippetEl = card.querySelector('.doomscroll-card-snippet');
+          if (preview && snippetEl instanceof HTMLElement) {
+            void this.renderSnippet(preview, snippetEl);
+          }
+          if (path && !this.viewedPathsInBatch.has(path)) {
+            this.viewedPathsInBatch.add(path);
+            this.plugin.data.history = recordView(
+              this.plugin.data.history,
+              path,
+              Date.now()
+            );
+            historyChanged = true;
+          }
+          this.cardObserver?.unobserve(card);
+        }
+        if (historyChanged) this.scheduleHistorySave();
+      },
+      { root: container, threshold: 0.1 }
+    );
+  }
+
+  private observeInfiniteScroll(
+    container: HTMLElement,
+    existingSentinel?: HTMLElement
+  ): void {
+    if (!this.plugin.data.settings.infiniteScroll) return;
+    const sentinel =
+      existingSentinel ??
+      container.querySelector<HTMLElement>(
+        '.doomscroll-infinite-scroll-sentinel'
+      ) ??
+      container.createDiv('doomscroll-infinite-scroll-sentinel');
+    this.infiniteScrollObserver?.disconnect();
+    this.infiniteScrollObserver = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void this.loadMoreCards(container, sentinel);
+        }
+      },
+      { root: container, rootMargin: '400px' }
+    );
+    this.infiniteScrollObserver.observe(sentinel);
   }
 
   private async loadMoreCards(
@@ -814,6 +1130,9 @@ export class DoomscrollView extends ItemView {
   ): HTMLElement {
     const card = container.createDiv('doomscroll-card');
     card.dataset.path = preview.path;
+    card.setAttribute('role', 'article');
+    card.tabIndex = -1;
+    card.setAttribute('aria-label', preview.title);
     const inlineAttachmentPreview =
       preview.attachment &&
       (isImagePath(preview.path) ||
@@ -895,6 +1214,7 @@ export class DoomscrollView extends ItemView {
 
     // Click handler
     card.addEventListener('click', () => {
+      this.focusCard(card, false);
       void this.renderSnippet(preview, snippetEl);
       void this.openPreview(preview);
     });
@@ -1253,23 +1573,26 @@ export class DoomscrollView extends ItemView {
     img: HTMLImageElement,
     imageDimensionCacheKey: string
   ): void {
-    img.addEventListener('load', () => {
-      if (img.naturalWidth <= 0 || img.naturalHeight <= 0) return;
+    if (!this.imageLoadListeners.has(img)) {
+      img.addEventListener('load', () => {
+        if (img.naturalWidth <= 0 || img.naturalHeight <= 0) return;
 
-      const dimensions = {
-        width: img.naturalWidth,
-        height: img.naturalHeight,
-      };
-      imageDimensionCache.delete(imageDimensionCacheKey);
-      imageDimensionCache.set(imageDimensionCacheKey, dimensions);
-      while (imageDimensionCache.size > MAX_IMAGE_DIMENSION_CACHE_ENTRIES) {
-        const oldestKey = imageDimensionCache.keys().next().value;
-        if (typeof oldestKey !== 'string') break;
-        imageDimensionCache.delete(oldestKey);
-      }
-      applyImageDimensions(img, dimensions);
-      this.cacheCardSize(img.closest('.doomscroll-card'));
-    });
+        const dimensions = {
+          width: img.naturalWidth,
+          height: img.naturalHeight,
+        };
+        imageDimensionCache.delete(imageDimensionCacheKey);
+        imageDimensionCache.set(imageDimensionCacheKey, dimensions);
+        while (imageDimensionCache.size > MAX_IMAGE_DIMENSION_CACHE_ENTRIES) {
+          const oldestKey = imageDimensionCache.keys().next().value;
+          if (typeof oldestKey !== 'string') break;
+          imageDimensionCache.delete(oldestKey);
+        }
+        applyImageDimensions(img, dimensions);
+        this.cacheCardSize(img.closest('.doomscroll-card'));
+      });
+      this.imageLoadListeners.add(img);
+    }
 
     if (!this.imageObserver) {
       this.imageObserver = new IntersectionObserver(
@@ -1385,6 +1708,7 @@ export class DoomscrollView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    this.cancelScrollAnimation();
     this.isClosed = true;
     this.snippetRenderGenerations = new WeakMap();
     this.pluginRefreshExcludePaths.clear();
@@ -1716,6 +2040,14 @@ function parseViewState(state: unknown): DoomscrollViewState | null {
 
   const cursor = state.batchHistoryCursor;
   const scrollTop = state.scrollTop;
+  const rawAnchor = state.scrollAnchor;
+  const scrollAnchor =
+    isRecord(rawAnchor) &&
+    typeof rawAnchor.path === 'string' &&
+    typeof rawAnchor.topOffset === 'number' &&
+    Number.isFinite(rawAnchor.topOffset)
+      ? { path: rawAnchor.path, topOffset: rawAnchor.topOffset }
+      : null;
   return {
     batchPaths,
     batchHistoryPaths,
@@ -1725,6 +2057,9 @@ function parseViewState(state: unknown): DoomscrollViewState | null {
       typeof scrollTop === 'number' && Number.isFinite(scrollTop)
         ? Math.max(0, scrollTop)
         : 0,
+    focusedPath:
+      typeof state.focusedPath === 'string' ? state.focusedPath : null,
+    scrollAnchor,
   };
 }
 
